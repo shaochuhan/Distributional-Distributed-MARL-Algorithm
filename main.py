@@ -41,12 +41,6 @@ def parse_args():
     sp_evaluate.add_argument('--base-dir', type=str, default=default_base_dir, help="experiment base dir")
     sp_evaluate.add_argument('--evaluation-seeds', type=str, required=False, default=','.join([str(i) for i in range(2000, 2500, 10)]), help="random seeds for evaluation, split by ,")
     sp_evaluate.add_argument('--demo', action='store_true', help="shows SUMO gui")
-     # 添加恶意智能体参数
-    sp_train.add_argument('--malicious-agents', type=str, default='', 
-                         help="malicious agent IDs, comma separated (e.g., '0,2')")
-    sp_train.add_argument('--malicious-type', type=str, default='random', 
-                         choices=MaliciousAgentWrapper.SUPPORTED_BEHAVIORS,
-                         help="malicious behavior type")
     # 添加版本号参数
     sp_train.add_argument('--version', type=str, default='v1', 
                          help="experiment version (e.g., 'v1', 'v2', 'test')")
@@ -167,16 +161,6 @@ def train(args):
     # 从命令行参数获取版本号
     version = args.version if hasattr(args, 'version') else 'v1'
     
-    # 从命令行参数获取恶意智能体类型
-    if hasattr(args, 'malicious_agents') and args.malicious_agents:
-        malicious = args.malicious_type
-        experiment_name = f"{algo_name}_{scenario_name}_{version}_{malicious}"
-    else:
-        # 没有恶意智能体时使用 honest
-        malicious = "honest"
-        experiment_name = f"{algo_name}_{scenario_name}_{version}_{malicious}"
-
-
     # experiment_name = f"{algo_name}_{scenario_name}"
     # 构建路径
     experiment_base_dir = os.path.join(base_dir, experiment_name)
