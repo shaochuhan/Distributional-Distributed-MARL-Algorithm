@@ -1,0 +1,419 @@
+"""
+VMAS Unified Environment Adapter
+统一适配器，让所有算法（ia2c, ma2c, wpo等）都能在VMAS场景上运行
+"""
+
+import numpy as np
+import torch
+from vmas import make_env
+
+
+def discrete_to_continuous_action(action_idx, n_actions):
+    """
+    将离散动作索引映射为VMAS需要的连续动作向量
+    
+    Args:
+        action_idx: 离散动作索引 (0 到 n_actions-1)
+        n_actions: 动作维度
+    
+    Returns:
+        numpy array: 形状为(n_actions,)的连续动作向量，范围[-1, 1]
+    """
+    # 创建one-hot风格的向量
+    action_vec = np.zeros(n_actions, dtype=np.float32)
+    idx = int(action_idx) if not isinstance(action_idx, int) else action_idx
+    action_vec[idx] = 1.0
+    # 映射到[-1, 1]范围（VMAS期望的力的范围）
+    return action_vec * 2.0 - 1.0
+
+
+class VmasUnifiedEnv:
+    """
+    VMAS环境的统一适配器
+    
+    提供与 Grid_World 和 CACCEnv 相同的接口
+    支持所有算法：ia2c, ia2c_fp, ma2c_nc, ma2c_cnet, ma2c_cu, ma2c_dial, d2ac_cu, wpo_cu
+    """
+    
+    def __init__(self, config):
+        """
+        初始化VMAS环境
+        
+        Args:
+            config: ConfigParser对象，包含环境配置
+        """
+        # 从配置读取参数
+        self.scenario_name = config.get('vmas_scenario', 'navigation')  # VMAS场景名
+        self.n_agent = config.getint('n_agent', 4)
+        self.num_envs = config.getint('num_envs', 1)  # 向量化环境数量
+        self.max_steps = config.getint('max_steps', 200)
+        self.device_name = config.get('device', 'cuda' if torch.cuda.is_available() else 'cpu')
+        self.continuous_actions = config.getboolean('continuous_actions', True)
+        self.agent = config.get('agent')  # 算法名称
+        self.coop_gamma = config.getfloat('coop_gamma', 0.9)
+        
+        # 场景特定参数
+        self.n_obstacles = config.getint('n_obstacles', 2)  # navigation场景
+        self.shared_rew = config.getboolean('shared_rew', True)
+        self.observe_all_goals = config.getboolean('observe_all_goals', False)
+        
+        # 创建VMAS环境
+        self.vmas_env = make_env(
+            scenario=self.scenario_name,
+            num_envs=self.num_envs,
+            device=self.device_name,
+            continuous_actions=self.continuous_actions,
+            max_steps=self.max_steps,
+            # 场景特定kwargs
+            n_agents=self.n_agent,
+            **self._get_scenario_kwargs()
+        )
+        
+        # 重置环境获取初始信息
+        self._initial_reset()
+        
+        # 构建邻居mask和距离mask（用于共识更新算法）
+        self.neighbor_mask = self._build_neighbor_mask()
+        self.distance_mask = self._build_distance_mask()
+        
+        # 当前状态
+        self.cur_step = 0
+        self.done_flag = False
+        
+        # 时间步长属性（用于Trainer）
+        self.T = self.max_steps
+        self.t = 0  # 当前episode的时间步
+        
+    def _get_scenario_kwargs(self):
+        """根据场景返回特定参数"""
+        if self.scenario_name == 'navigation':
+            return {
+                'n_obstacles': self.n_obstacles,
+                'shared_rew': self.shared_rew,
+                'observe_all_goals': self.observe_all_goals,
+            }
+        elif self.scenario_name == 'transport':
+            return {
+                'n_packages': 1,
+                'package_mass': 50,
+                'package_width': 0.15,
+                'package_length': 0.15,
+            }
+        elif self.scenario_name == 'balance':
+            return {
+                'n_agents': self.n_agent,
+                'random_package_pos_on_line': True,
+            }
+        elif self.scenario_name == 'sampling':
+            return {
+                'n_agents': self.n_agent,
+                'n_gaussians': 4,
+                'shared_rew': self.shared_rew,
+            }
+        elif self.scenario_name == 'flocking':
+            return {
+                'n_agents': self.n_agent,
+                'n_obstacles': self.n_obstacles,
+            }
+        elif self.scenario_name == 'discovery':
+            return {
+                'n_agents': self.n_agent,
+                'n_targets': 5,
+                'agents_per_target': 2,
+            }
+        else:
+            return {}
+    
+    def _initial_reset(self):
+        """初始重置，获取环境信息"""
+        obs = self.vmas_env.reset()
+        
+        # 处理观测空间
+        if isinstance(obs, dict):
+            # Dict空间
+            self.obs_dict_mode = True
+            agent_names = list(obs.keys())
+            self.n_agent = len(agent_names)
+            sample_obs = obs[agent_names[0]]
+        else:
+            # Tuple空间
+            self.obs_dict_mode = False
+            self.n_agent = len(obs)
+            sample_obs = obs[0]
+        
+        # 确定状态和动作维度
+        if isinstance(sample_obs, dict):
+            # 嵌套观测
+            self.n_s = sum([v.shape[-1] for v in sample_obs.values()])
+        else:
+            self.n_s = sample_obs.shape[-1]
+        
+        # 动作空间（假设所有智能体相同）
+        # VMAS agents使用action_size而不是action_space
+        self.n_a = self.vmas_env.agents[0].action_size
+        if not self.continuous_actions:
+            # 对于离散动作，可能需要额外的配置
+            if hasattr(self.vmas_env.agents[0], 'discrete_action_nvec'):
+                self.n_a = self.vmas_env.agents[0].discrete_action_nvec
+        
+        # 为每个智能体设置相同的状态和动作维度
+        self.n_s_ls = [self.n_s] * self.n_agent
+        self.n_a_ls = [self.n_a] * self.n_agent
+        
+    def _build_neighbor_mask(self):
+        """构建邻居mask（全连接图）"""
+        # 默认使用全连接
+        mask = np.ones((self.n_agent, self.n_agent))
+        np.fill_diagonal(mask, 0)  # 自己不是自己的邻居
+        return mask
+    
+    def _build_distance_mask(self):
+        """构建距离mask（全连接图，距离为1）"""
+        mask = np.ones((self.n_agent, self.n_agent))
+        np.fill_diagonal(mask, 0)
+        return mask
+    
+    def reset(self):
+        """重置环境"""
+        obs = self.vmas_env.reset()
+        self.cur_step = 0
+        self.t = 0  # 重置时间步
+        self.done_flag = False
+        return self._process_obs(obs)
+    
+    def _process_obs(self, obs):
+        """处理观测，转换为numpy数组列表"""
+        if self.obs_dict_mode:
+            # Dict模式：{agent_name: obs_tensor}
+            processed = []
+            for agent_name in sorted(obs.keys()):
+                agent_obs = obs[agent_name]
+                if isinstance(agent_obs, dict):
+                    # 嵌套字典，展平
+                    flat_obs = torch.cat([v.flatten(-2) for v in agent_obs.values()], dim=-1)
+                else:
+                    flat_obs = agent_obs
+                # 转numpy，取第一个环境
+                processed.append(flat_obs[0].cpu().numpy())
+        else:
+            # Tuple模式：[obs_tensor_agent0, ...]
+            processed = []
+            for agent_obs in obs:
+                if isinstance(agent_obs, dict):
+                    flat_obs = torch.cat([v.flatten(-2) for v in agent_obs.values()], dim=-1)
+                else:
+                    flat_obs = agent_obs
+                processed.append(flat_obs[0].cpu().numpy())
+        
+        return processed
+    
+    def step(self, actions):
+        """
+        执行动作
+        
+        Args:
+            actions: list of arrays/ints, 每个智能体的动作（离散索引或连续向量）
+        
+        Returns:
+            obs: list of arrays, 观测
+            rewards: list of floats, 奖励
+            done: bool, 是否结束
+            info: dict, 额外信息
+        """
+        # 将动作转换为VMAS格式 (num_envs, action_size)
+        # VMAS始终期望连续动作，需要将离散动作映射到连续空间
+        vmas_actions = []
+        for action in actions:
+            # 提取动作值
+            if isinstance(action, torch.Tensor):
+                action_val = action.item() if action.numel() == 1 else action.cpu().numpy()
+            else:
+                action_val = action
+            
+            # 判断是离散还是连续动作
+            if isinstance(action_val, (int, np.integer)):
+                # 离散动作：映射到连续空间
+                action_cont = discrete_to_continuous_action(action_val, self.n_a)
+            elif isinstance(action_val, np.ndarray):
+                if action_val.size == 1:
+                    # 单值数组（离散动作）
+                    action_cont = discrete_to_continuous_action(int(action_val), self.n_a)
+                else:
+                    # 连续动作向量
+                    action_cont = action_val.astype(np.float32)
+            else:
+                # 其他情况（如float）：假设是单维离散动作
+                action_cont = discrete_to_continuous_action(int(action_val), self.n_a)
+            
+            # 转换为VMAS tensor (1, action_size)
+            action_tensor = torch.tensor(
+                action_cont.reshape(1, -1),
+                dtype=torch.float32,
+                device=self.device_name
+            )
+            vmas_actions.append(action_tensor)
+        
+        # 如果是Dict观测模式，需要重新组织为dict（暂时不支持，使用list）
+        if self.obs_dict_mode:
+            # Dict格式暂时未实现，使用list格式
+        if self.obs_dict_mode:
+            # Dict格式
+            action_dict = {}
+            agent_names = sorted([agent.name for agent in self.vmas_env.agents])
+            for i, agent_name in enumerate(agent_names):
+                action = actions[i]
+                # 转换为tensor并确保形状正确
+                if isinstance(action, torch.Tensor):
+                    # 如果是tensor，确保在正确的设备和形状
+                    action_tensor = action.to(self.device_name)
+                    if action_tensor.dim() == 0:  # 标量
+                        action_tensor = action_tensor.unsqueeze(0).unsqueeze(0)  # -> (1, 1)
+                    elif action_tensor.dim() == 1:  # 1D tensor
+                        action_tensor = action_tensor.unsqueeze(0)  # -> (1, action_size)
+                    # 确保是(1, action_size)
+                    if action_tensor.shape[-1] != self.n_a:
+                        action_tensor = action_tensor.reshape(1, -1)
+                else:
+                    action_array = np.array(action)
+                    if action_array.ndim == 0:  # 标量
+                        action_array = action_array.reshape(1, 1)
+                    elif action_array.ndim == 1:
+                        action_array = action_array.reshape(1, -1)
+                    action_tensor = torch.tensor(action_array, dtype=torch.float32, device=self.device_name)
+                action_dict[agent_name] = action_tensor
+            vmas_actions = action_dict
+        else:
+            # List格式
+            vmas_actions = []
+            for a in actions:
+                # 转换为tensor并确保形状正确
+                if isinstance(a, torch.Tensor):
+                    # 如果是tensor，确保在正确的设备和形状
+                    action_tensor = a.to(self.device_name)
+                    if action_tensor.dim() == 0:  # 标量
+                        action_tensor = action_tensor.unsqueeze(0).unsqueeze(0)  # -> (1, 1)
+                    elif action_tensor.dim() == 1:  # 1D tensor
+                        action_tensor = action_tensor.unsqueeze(0)  # -> (1, action_size)
+                    # 确保是(1, action_size)
+                    if action_tensor.shape[-1] != self.n_a:
+                        action_tensor = action_tensor.reshape(1, -1)
+                else:
+                    action_array = np.array(a)
+                    if action_array.ndim == 0:  # 标量
+                        action_array = action_array.reshape(1, 1)
+                    elif action_array.ndim == 1:
+                        action_array = action_array.reshape(1, -1)
+                    action_tensor = torch.tensor(action_array, dtype=torch.float32, device=self.device_name)
+                vmas_actions.append(action_tensor)
+        
+        # 执行步骤
+        obs, rewards, dones, info = self.vmas_env.step(vmas_actions)
+        
+        # 处理输出
+        processed_obs = self._process_obs(obs)
+        
+        # 处理奖励
+        if isinstance(rewards, dict):
+            processed_rewards = [rewards[name][0].item() for name in sorted(rewards.keys())]
+        else:
+            processed_rewards = [r[0].item() for r in rewards]
+        
+        # 处理done
+        if isinstance(dones, torch.Tensor):
+            done = dones[0].item()
+        else:
+            done = dones
+        
+        self.cur_step += 1
+        self.t += 1  # 更新时间步
+        self.done_flag = done or (self.cur_step >= self.max_steps)
+        
+        return processed_obs, processed_rewards, self.done_flag, {}
+    
+    def get_state(self):
+        """获取全局状态（用于某些算法）"""
+        # 简单实现：连接所有智能体的观测
+        obs = self._process_obs(self.vmas_env.reset())
+        return np.concatenate(obs)
+    
+    def render(self, mode='human'):
+        """渲染环境"""
+        return self.vmas_env.render(
+            mode=mode,
+            agent_index_focus=None,
+            visualize_when_rgb=True
+        )
+    
+    def close(self):
+        """关闭环境"""
+        pass  # VMAS环境不需要显式关闭
+    
+    def init_test_seeds(self, seeds):
+        """初始化测试种子（用于评估）"""
+        self.test_seeds = seeds
+        self.test_seed_index = 0
+    
+    def update_fingerprint(self, fp):
+        """更新fingerprint（用于IA2C-FP算法）"""
+        self.fp = fp
+    
+    def get_avail_actions(self):
+        """获取可用动作（用于离散动作空间）"""
+        # 默认所有动作都可用
+        return [[1] * self.n_a for _ in range(self.n_agent)]
+    
+    def get_neighbor_action(self, action):
+        """获取每个智能体的邻居动作（用于IA2C等算法）"""
+        action_array = np.array(action)
+        naction = []
+        for i in range(self.n_agent):
+            # 获取邻居的动作
+            neighbor_actions = action_array[self.neighbor_mask[i] == 1]
+            naction.append(neighbor_actions)
+        return naction
+
+
+# VMAS场景推荐配置
+VMAS_SCENARIO_CONFIGS = {
+    'navigation': {
+        'max_steps': 200,
+        'n_obstacles': 2,
+        'shared_rew': True,
+        'observe_all_goals': False,
+    },
+    'transport': {
+        'max_steps': 300,
+        'n_packages': 1,
+        'package_mass': 50,
+    },
+    'balance': {
+        'max_steps': 250,
+        'random_package_pos_on_line': True,
+    },
+    'sampling': {
+        'max_steps': 200,
+        'n_gaussians': 4,
+        'shared_rew': True,
+    },
+    'flocking': {
+        'max_steps': 200,
+        'n_obstacles': 3,
+    },
+    'discovery': {
+        'max_steps': 200,
+        'n_targets': 5,
+        'agents_per_target': 2,
+    },
+    'waterfall': {
+        'max_steps': 200,
+    },
+    'give_way': {
+        'max_steps': 150,
+    },
+    'wheel': {
+        'max_steps': 200,
+    },
+    'passage': {
+        'max_steps': 300,
+    },
+}
