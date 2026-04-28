@@ -1,5 +1,4 @@
 # Distributional Distributed MARL Algorithm (D²MARL)
-**Official PyTorch implementation of the paper: *Distributional Distributed MARL Algorithm***
 
 ## Overview
 D²MARL is a fully decentralized multi-agent reinforcement learning (MARL) algorithm for **continuous action spaces** under communication constraints. It integrates distributional value estimation and Wasserstein policy optimization to address high policy gradient variance and heteroscedastic noise in fully distributed MARL systems.
@@ -30,11 +29,11 @@ Distributional-Distributed-MARL-Algorithm/
 ## Getting Started
 ### Train
 ```bash
-python main.py --base-dir ./exp/d2marl train --config-dir ./config
+python main.py --base-dir ./config/d2marl train --config-dir ./config
 ```
 ### Evaluate
 ```bash
-python main.py --base-dir ./exp/d2marl evaluate --evaluation-seeds 100
+python main.py --base-dir ./config/d2marl evaluate --evaluation-seeds 100
 ```
 ## Supported Environments
 - Cooperative Adaptive Cruise Control (CACC)
