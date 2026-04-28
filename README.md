@@ -1,69 +1,42 @@
-# Networked Multi-agent RL (NMARL)
-This repo implements the state-of-the-art MARL algorithms for networked system control, with observability and communication of each agent limited to its neighborhood. For fair comparison, all algorithms are applied to A2C agents, classified into two groups: IA2C contains non-communicative policies which utilize neighborhood information only, whereas MA2C contains communicative policies with certain communication protocols.
+# Distributional Distributed MARL Algorithm (D²MARL)
+**Official PyTorch implementation of the paper: *Distributional Distributed MARL Algorithm***
 
-Available IA2C algorithms:
-* PolicyInferring: [Lowe, Ryan, et al. "Multi-agent actor-critic for mixed cooperative-competitive environments." Advances in Neural Information Processing Systems, 2017.](https://papers.nips.cc/paper/7217-multi-agent-actor-critic-for-mixed-cooperative-competitive-environments.pdf)
-* FingerPrint: [Foerster, Jakob, et al. "Stabilising experience replay for deep multi-agent reinforcement learning." arXiv preprint arXiv:1702.08887, 2017.](https://arxiv.org/pdf/1702.08887.pdf)
-* ConsensusUpdate: [Zhang, Kaiqing, et al. "Fully decentralized multi-agent reinforcement learning with networked agents." arXiv preprint arXiv:1802.08757, 2018.](https://arxiv.org/pdf/1802.08757.pdf)
+## Overview
+D²MARL is a fully decentralized multi-agent reinforcement learning (MARL) algorithm for **continuous action spaces** under communication constraints. It integrates distributional value estimation and Wasserstein policy optimization to address high policy gradient variance and heteroscedastic noise in fully distributed MARL systems.
 
+The algorithm supports fully decentralized training with only local neighbor communication and provides theoretical convergence guarantees.
 
-Available MA2C algorithms:
-* DIAL: [Foerster, Jakob, et al. "Learning to communicate with deep multi-agent reinforcement learning." Advances in Neural Information Processing Systems. 2016.](http://papers.nips.cc/paper/6042-learning-to-communicate-with-deep-multi-agent-reinforcement-learning.pdf)
-* CommNet: [Sukhbaatar, Sainbayar, et al. "Learning multiagent communication with backpropagation." Advances in Neural Information Processing Systems, 2016.](https://arxiv.org/pdf/1605.07736.pdf)
-* NeurComm: Inspired from [Gilmer, Justin, et al. "Neural message passing for quantum chemistry." arXiv preprint arXiv:1704.01212, 2017.](https://arxiv.org/pdf/1704.01212.pdf)
+## Framework
+![D²MARL Framework](https://p11-flow-imagex-sign.byteimg.com/tos-cn-i-a9rns2rl98/de9b41d5fecd41f98021d22df64426b1.png~tplv-a9rns2rl98-image.png?lk3s=8e244e95&rcl=20260428105915C6E427185EFC740E7F18&rrcfp=dafada99&x-expires=2093569155&x-signature=jk%2BSjA05HlUg4KFEDeUlcXRvdJ8%3D)
 
-Available NMARL scenarios:
-* ATSC Grid: Adaptive traffic signal control in a synthetic traffic grid.
-* ATSC Monaco: Adaptive traffic signal control in a real-world traffic network from Monaco city.
-* CACC Catch-up: Cooperative adaptive cruise control for catching up the leadinig vehicle.
-* CACC Slow-down: Cooperative adaptive cruise control for following the leading vehicle to slow down.
+## Key Features
+- **Distributional Critic**: Models return distribution via Gaussian parametrization; uses inverse-variance weighting from KL divergence for noise-robust learning.
+- **Wasserstein Policy Optimization**: Stable policy update with zero sampling variance, combining exploration and stability.
+- **Fully Decentralized**: No centralized controller; only local neighbor communication for consensus.
+- **Theoretical Convergence**: Almost sure convergence to a stationary point under mild assumptions.
+- **Scalable for Continuous Control**: Performs favorably on CACC, VMAS, and networked systems.
 
-## Requirements
-* Python3 == 3.5
-* [PyTorch](https://pytorch.org/get-started/locally/) == 1.4.0
-* [Tensorflow](http://www.tensorflow.org/install) == 2.1.0 (for tensorboard) 
-* [SUMO](http://sumo.dlr.de/wiki/Installing) >= 1.1.0
+## Project Structure
+```text
+Distributional-Distributed-MARL-Algorithm/
+├── agents/         # Core agent and trainer implementations
+├── config/         # Hyperparameter configuration files
+├── envs/           # Multi-agent environments
+├── utils.py        # Utility functions
+├── main.py         # Training and evaluation entry
+└── requirements.txt # Dependencies
+```
 
-## Usages
-First define all hyperparameters (including algorithm and DNN structure) in a config file under `[config_dir]` ([examples](./config)), and create the base directory of each experiement `[base_dir]`. For ATSC Grid, please call [`build_file.py`](./envs/large_grid_data) to generate SUMO network files before training.
-
-1. To train a new agent, run
-~~~
-python3 main.py --base-dir [base_dir] train --config-dir [config_dir]
-~~~
-Training config/data and the trained model will be output to `[base_dir]/data` and `[base_dir]/model`, respectively.
-
-2. To access tensorboard during training, run
-~~~
-tensorboard --logdir=[base_dir]/log
-~~~
-
-3. To evaluate a trained agent, run
-~~~
-python3 main.py --base-dir [base_dir] evaluate --evaluation-seeds [seeds]
-~~~
-Evaluation data will be output to `[base_dir]/eva_data`. Make sure evaluation seeds are different from those used in training.    
-
-4. To visualize the agent behavior in ATSC scenarios, run
-~~~
-python3 main.py --base-dir [base_dir] evaluate --evaluation-seeds [seed] --demo
-~~~
-It is recommended to use only one evaluation seed for the demo run. This will launch the SUMO GUI, and [`view.xml`](./envs/large_grid_data) can be applied to visualize queue length and intersectin delay in edge color and thickness. 
-
-## Reproducibility
-The paper results are based on an out-of-date SUMO version 0.32.0. We are re-running the experiments with SUMO 1.2.0 and will update the results soon. The pytorch impelmention is avaliable at branch [pytorch](https://github.com/cts198859/deeprl_network/tree/pytorch).
-
-## Citation
-For more implementation details and underlying reasonings, please check our paper [Multi-agent Reinforcement Learning for Networked System Control](https://openreview.net/forum?id=Syx7A3NFvH).
-~~~
-@inproceedings{
-chu2020multiagent,
-title={Multi-agent Reinforcement Learning for Networked System Control},
-author={Tianshu Chu and Sandeep Chinchali and Sachin Katti},
-booktitle={International Conference on Learning Representations},
-year={2020},
-url={https://openreview.net/forum?id=Syx7A3NFvH}
-}
-~~~
-
-
+## Getting Started
+### Train
+```bash
+python main.py --base-dir ./exp/d2marl train --config-dir ./config
+```
+### Evaluate
+```bash
+python main.py --base-dir ./exp/d2marl evaluate --evaluation-seeds 100
+```
+## Supported Environments
+- Cooperative Adaptive Cruise Control (CACC)
+- Vectorized Multi-Agent Simulator (VMAS)
+- Networked System Control
