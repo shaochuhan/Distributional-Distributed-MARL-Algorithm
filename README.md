@@ -7,7 +7,7 @@ D²MARL is a fully decentralized multi-agent reinforcement learning (MARL) algor
 The algorithm supports fully decentralized training with only local neighbor communication and provides theoretical convergence guarantees.
 
 ## Framework
-![D²MARL Framework](https://p11-flow-imagex-sign.byteimg.com/tos-cn-i-a9rns2rl98/de9b41d5fecd41f98021d22df64426b1.png~tplv-a9rns2rl98-image.png?lk3s=8e244e95&rcl=20260428105915C6E427185EFC740E7F18&rrcfp=dafada99&x-expires=2093569155&x-signature=jk%2BSjA05HlUg4KFEDeUlcXRvdJ8%3D)
+![D²MARL Framework](https://github.com/shaochuhan/Distributional-Distributed-MARL-Algorithm/raw/master/d2marl-framework.jpg)
 
 ## Key Features
 - **Distributional Critic**: Models return distribution via Gaussian parametrization; uses inverse-variance weighting from KL divergence for noise-robust learning.
